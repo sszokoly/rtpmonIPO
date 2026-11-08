@@ -218,3 +218,11 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+changes/*
+data/*
+docs/*
+ipo_rtp/*
+openspec/*
+specs/*
+tests/*
+.opencode/*
