@@ -18,6 +18,7 @@ import hashlib
 import subprocess
 import sys
 import zlib
+from datetime import datetime
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -192,7 +193,9 @@ def assemble_flat_source() -> str:
     return "\n\n\n".join(chunks) + "\n"
 
 
-def wrap_launcher(flat_source: str, shebang: str | None) -> str:
+def wrap_launcher(
+    flat_source: str, shebang: str | None, build_date: str
+) -> str:
     """Compress *flat_source* and return a Python launcher for it."""
     encoded = base64.b64encode(
         zlib.compress(flat_source.encode(), level=9)
@@ -209,7 +212,8 @@ def wrap_launcher(flat_source: str, shebang: str | None) -> str:
                 '"""Generated rtpmonIPO bundle; requires aiohttp.\n\n'
                 "Do not edit.\n\n"
                 "#Author: Sabi Szokoly\n"
-                '#Contact: https://github.com/sszokoly\n"""'
+                "#Contact: https://github.com/sszokoly\n"
+                f'#Build Date: {build_date}\n"""'
             ),
             "import base64",
             "import zlib",
@@ -269,12 +273,15 @@ def build(
 
     flat_source = assemble_flat_source()
     compile(flat_source, "<rtpmonIPO flat source>", "exec")
-    launcher = wrap_launcher(flat_source, shebang)
+    build_date = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S")
+    launcher = wrap_launcher(flat_source, shebang, build_date)
     compile(launcher, "<rtpmonIPO bundle>", "exec")
 
     if (
         hashlib.sha256(launcher.encode()).digest()
-        != hashlib.sha256(wrap_launcher(flat_source, shebang).encode()).digest()
+        != hashlib.sha256(
+            wrap_launcher(flat_source, shebang, build_date).encode()
+        ).digest()
     ):
         raise BuildError("bundle output is not deterministic")
 
