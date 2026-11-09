@@ -6,6 +6,7 @@ import ipaddress
 import re
 import struct
 from datetime import UTC, datetime
+from typing import TypedDict, cast
 
 from .models import RtpSummary
 
@@ -31,6 +32,20 @@ REQUIRED_METRICS = {
     "remoteloss": "remoteloss",
 }
 INTEGER_METRICS = frozenset(REQUIRED_METRICS.values()) - {"codec", "rfc2833"}
+
+
+class _RtpMetrics(TypedDict):
+    codec: str
+    pktsz: int
+    rfc2833: str
+    age: int
+    sent: int
+    recv: int
+    rtpdelay: int
+    jitter: int
+    loss: int
+    remotejitter: int
+    remoteloss: int
 
 
 def is_rtp_end_candidate(payload: bytes) -> bool:
@@ -103,7 +118,7 @@ def _parse_endpoint(value: str) -> tuple[str, int]:
     return address, port
 
 
-def _parse_metrics(text: str) -> dict[str, str | int] | None:
+def _parse_metrics(text: str) -> _RtpMetrics | None:
     metrics: dict[str, str | int] = {}
     for token in text.split():
         key, separator, value = token.partition("=")
@@ -132,4 +147,5 @@ def _parse_metrics(text: str) -> dict[str, str | int] | None:
 
     if set(metrics) != set(REQUIRED_METRICS.values()):
         return None
-    return metrics
+    # Every required field is present and its value type was checked above.
+    return cast(_RtpMetrics, metrics)

@@ -11,7 +11,7 @@ import unittest
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from aiohttp import WSMsgType
 
@@ -80,11 +80,54 @@ class ProtocolTests(unittest.TestCase):
             args = cli.create_parser().parse_args(
                 ["-f", str(path), "192.0.2.2"]
             )
-            self.assertEqual(args.file, ["192.0.2.1", "2001:db8::1"])
+            self.assertEqual(
+                args.file,
+                [cli._IpoTarget("192.0.2.1"), cli._IpoTarget("2001:db8::1")],
+            )
             self.assertEqual(args.ipo_addresses, ["192.0.2.2"])
             path.write_text("192.0.2.1\ninvalid\n", encoding="utf-8")
             with self.assertRaisesRegex(argparse.ArgumentTypeError, r":2:"):
                 cli._address_file(str(path))
+
+    def test_csv_credentials_and_invalid_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "addresses.csv"
+            path.write_text(
+                '\nip,username,password\n192.0.2.1,site-user," secret,pw "\n'
+                '2001:db8::1,,site-password\n192.0.2.2,user\n',
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                cli._address_file(str(path)),
+                [
+                    cli._IpoTarget("192.0.2.1", "site-user", " secret,pw "),
+                    cli._IpoTarget("2001:db8::1", None, "site-password"),
+                    cli._IpoTarget("192.0.2.2", "user"),
+                ],
+            )
+            for row in (
+                "192.0.2.1,user,secret,extra\n",
+                "invalid,user,secret\n",
+                '192.0.2.1,user,"secret\n',
+            ):
+                with self.subTest(row=row):
+                    path.write_text(row, encoding="utf-8")
+                    with self.assertRaises(argparse.ArgumentTypeError) as raised:
+                        cli._address_file(str(path))
+                    self.assertIn(f"{path}:", str(raised.exception))
+                    self.assertNotIn("secret", str(raised.exception))
+
+    def test_main_accepts_file_only_credentials(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "addresses.csv"
+            path.write_text("192.0.2.1,user,password\n", encoding="utf-8")
+            with patch.object(cli, "run", new_callable=AsyncMock) as run:
+                run.return_value = 0
+                self.assertEqual(cli.main(["--file", str(path)]), 0)
+            self.assertEqual(
+                run.call_args.args[0].file,
+                [cli._IpoTarget("192.0.2.1", "user", "password")],
+            )
 
 
 class StartupTests(unittest.IsolatedAsyncioTestCase):
@@ -158,6 +201,74 @@ class StartupTests(unittest.IsolatedAsyncioTestCase):
 
 
 class CliTests(unittest.IsolatedAsyncioTestCase):
+    async def test_per_target_credentials_and_fallbacks(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "addresses.csv"
+            path.write_text(
+                "192.0.2.1,file-user,file-password\n"
+                "192.0.2.2,,file-password\n"
+                "192.0.2.3,file-user,\n"
+                "192.0.2.4\n",
+                encoding="utf-8",
+            )
+            for source in ("cli", "environment", "file-only"):
+                with self.subTest(source=source):
+                    argv = ["--file", str(path)]
+                    if source == "cli":
+                        argv += [
+                            "--ipo-user", "cli-user",
+                            "--ipo-passwd", "cli-password",
+                        ]
+                    if source != "file-only":
+                        argv.append("192.0.2.10")
+                    args = cli.create_parser().parse_args(argv)
+                    if source == "file-only":
+                        args.file = args.file[:1]
+                    clients = []
+
+                    def make_client(url, **kwargs):
+                        client = MagicMock(websocket_url=url)
+                        client.connect = AsyncMock(
+                            side_effect=IpoConnectionError(url, "offline")
+                        )
+                        client.close = AsyncMock()
+                        clients.append(client)
+                        return client
+
+                    environment = (
+                        {} if source == "file-only" else
+                        {"IPO_USER": "env-user", "IPO_PASSWORD": "env-password"}
+                    )
+                    with (
+                        patch.dict(os.environ, environment, clear=True),
+                        patch.object(cli, "load_dotenv"),
+                        patch.object(cli, "IpoClient", side_effect=make_client)
+                        as factory,
+                        contextlib.redirect_stderr(io.StringIO()),
+                    ):
+                        self.assertEqual(await cli.run(args), 1)
+                    actual = [
+                        (call.kwargs["username"], call.kwargs["password"])
+                        for call in factory.call_args_list
+                    ]
+                    if source == "file-only":
+                        expected = [("file-user", "file-password")]
+                    else:
+                        user, password = (
+                            ("cli-user", "cli-password") if source == "cli"
+                            else ("env-user", "env-password")
+                        )
+                        expected = [
+                            (user, password),
+                            ("file-user", "file-password"),
+                            (user, "file-password"),
+                            ("file-user", password),
+                            (user, password),
+                        ]
+                    self.assertEqual(actual, expected)
+                    for client in clients:
+                        client.close.assert_awaited_once()
+
     async def test_partial_connection_and_independent_stream_failure(
         self,
     ) -> None:

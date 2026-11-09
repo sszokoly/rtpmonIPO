@@ -22,6 +22,23 @@ one address per line. Both forms can be combined:
 uv run -m rtpmonIPO --file ipo-addresses.txt 192.0.2.10
 ```
 
+The file can also contain CSV rows with optional per-IPO credentials:
+
+```csv
+ip,username,password
+192.0.2.1,Administrator,site-one-password
+192.0.2.2,monitor,"password,with,commas"
+192.0.2.3
+192.0.2.4,,site-four-password
+```
+
+The `ip,username,password` header is optional. Each non-empty username or
+password in a row overrides the corresponding `--ipo-user` / `--ipo-passwd`
+setting for that IPO. Missing or empty fields fall back to the CLI settings,
+then `IPO_USER` / `IPO_PASSWORD` (including `.env` when installed), then the
+built-in defaults. Command-line IP addresses use those same fallback settings.
+Blank lines are ignored; CSV quoting supports commas in credentials.
+
 Install `rtpmonipo[db]` to enable SQLite storage, then use
 `--db rtpsummary.db` to save printed summaries. When a summary
 arrives on a later local calendar day, existing records are moved to an archive

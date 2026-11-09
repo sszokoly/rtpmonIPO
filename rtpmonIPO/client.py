@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import deque
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
 from urllib.parse import SplitResult, urlsplit, urlunsplit
 
@@ -91,7 +91,7 @@ class IpoClient:
         """Close the WebSocket connection and its HTTP session."""
         await self._close_transport()
 
-    async def rtp_summaries(self) -> AsyncIterator[RtpSummary]:
+    async def rtp_summaries(self) -> AsyncGenerator[RtpSummary, None]:
         """Yield decoded RTP-end summaries from the WebSocket."""
         if self._websocket is None:
             raise RuntimeError("connection is not open")

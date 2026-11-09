@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import csv
+import importlib
 import ipaddress
 import logging
 import math
 import os
 import sys
 from collections.abc import Sequence
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
@@ -74,26 +77,56 @@ def _positive_seconds(value: str) -> float:
     return seconds
 
 
-def _address_file(filename: str) -> list[str]:
-    """Read and validate IPO addresses from a UTF-8 text file."""
-    addresses: list[str] = []
+@dataclass(frozen=True)
+class _IpoTarget:
+    address: str
+    username: str | None = None
+    password: str | None = field(default=None, repr=False)
+
+
+def _address_file(filename: str) -> list[_IpoTarget]:
+    """Read IPO addresses and optional per-IPO credentials from UTF-8 CSV."""
+    targets: list[_IpoTarget] = []
+    reader = None
     try:
-        with Path(filename).open(encoding="utf-8") as file:
-            for number, line in enumerate(file, start=1):
-                value = line.strip()
-                if not value:
+        with Path(filename).open(encoding="utf-8", newline="") as file:
+            reader = csv.reader(file, strict=True)
+            first_row = True
+            for row in reader:
+                if not row or (len(row) == 1 and not row[0].strip()):
                     continue
+                if first_row and row == ["ip", "username", "password"]:
+                    first_row = False
+                    continue
+                first_row = False
+                number = reader.line_num
+                if not 1 <= len(row) <= 3:
+                    raise argparse.ArgumentTypeError(
+                        f"{filename}:{number}: expected ip[,username[,password]]"
+                    )
                 try:
-                    addresses.append(_ipo_address(value))
+                    address = _ipo_address(row[0].strip())
                 except argparse.ArgumentTypeError as error:
                     raise argparse.ArgumentTypeError(
-                        f"{filename}:{number}: {error}: {value!r}"
+                        f"{filename}:{number}: {error}"
                     ) from error
+                targets.append(
+                    _IpoTarget(
+                        address,
+                        row[1] or None if len(row) > 1 else None,
+                        row[2] or None if len(row) > 2 else None,
+                    )
+                )
+    except csv.Error as error:
+        number = reader.line_num if reader is not None else 0
+        raise argparse.ArgumentTypeError(
+            f"{filename}:{number}: invalid CSV: {error}"
+        ) from error
     except (OSError, UnicodeError) as error:
         raise argparse.ArgumentTypeError(
             f"cannot read {filename!r}: {error}"
         ) from error
-    return addresses
+    return targets
 
 
 def create_parser() -> argparse.ArgumentParser:
@@ -128,7 +161,10 @@ def create_parser() -> argparse.ArgumentParser:
         type=_address_file,
         default=[],
         metavar="FILE",
-        help="read IPO IP addresses from a file, one per line",
+        help=(
+            "read IPOs from CSV: ip[,username[,password]]; file credentials "
+            "override --ipo-user and --ipo-passwd"
+        ),
     )
     parser.add_argument(
         "--protocol",
@@ -191,20 +227,31 @@ def _base_url(protocol: str, address: str, port: int) -> str:
 async def run(arguments: argparse.Namespace) -> int:
     """Connect to every requested IPO and print its RTP summaries."""
     username, password = _credentials(arguments)
-    if not username or not password:
-        raise ValueError("--ipo-user and --ipo-passwd must not be empty")
+    targets = [
+        _IpoTarget(address) for address in arguments.ipo_addresses
+    ] + list(getattr(arguments, "file", []))
+    credentials = [
+        (target.username or username, target.password or password)
+        for target in targets
+    ]
+    for target, (user, passwd) in zip(targets, credentials, strict=True):
+        if not user or not passwd:
+            raise ValueError(
+                f"{target.address}: --ipo-user and --ipo-passwd must not be "
+                "empty unless supplied in --file"
+            )
 
     clients: list[IpoClient] = [
         IpoClient(
-            _base_url(arguments.protocol, address, arguments.port),
-            username=username,
-            password=password,
+            _base_url(arguments.protocol, target.address, arguments.port),
+            username=user,
+            password=passwd,
             insecure=getattr(arguments, "insecure", False),
             startup_timeout=getattr(
                 arguments, "connection_timeout", CONNECTION_TIMEOUT
             ),
         )
-        for address in arguments.ipo_addresses
+        for target, (user, passwd) in zip(targets, credentials, strict=True)
     ]
     database = (
         SummaryDatabase(arguments.db)
@@ -392,7 +439,7 @@ def _format_summary(summary: RtpSummary, verbose: bool) -> str:
 def _disable_insecure_request_warnings() -> None:
     """Suppress urllib3 warnings when the user disables TLS checks."""
     try:
-        import urllib3
+        urllib3 = importlib.import_module("urllib3")
     except ImportError:
         return
     urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -402,8 +449,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     """Parse CLI arguments and run the asynchronous connection manager."""
     parser = create_parser()
     arguments = parser.parse_args(argv)
-    arguments.ipo_addresses.extend(arguments.file)
-    if not arguments.ipo_addresses:
+    if not arguments.ipo_addresses and not arguments.file:
         parser.error(
             "provide at least one IPO IP address or a non-empty --file"
         )
