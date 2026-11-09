@@ -1,7 +1,7 @@
 [project]
 name = "rtpmonipo"
 dynamic = ["version"]
-description = "Asynchronous Avaya IP Office SysMonitor RTP summary client"
+description = "Avaya IPO RTP summary monitoring client"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
