@@ -203,7 +203,9 @@ def wrap_launcher(flat_source: str, shebang: str | None) -> str:
         [
             (
                 '"""Generated rtpmonIPO bundle; requires aiohttp.\n\n'
-                'Do not edit."""'
+                "Do not edit.\n\n"
+                "#Author: Sabi Szokoly\n"
+                '#Contact: https://github.com/sszokoly\n"""'
             ),
             "import base64",
             "import zlib",

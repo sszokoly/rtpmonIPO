@@ -1,6 +1,10 @@
 """Generated rtpmonIPO bundle; requires aiohttp.
 
-Do not edit."""
+Do not edit.
+
+#Author: Sabi Szokoly
+#Contact: https://github.com/sszokoly
+"""
 import base64
 import zlib
 
