@@ -3,6 +3,10 @@
 Usage:
 
     uv run python scripts/build_single_file.py [options]
+
+
+Author: Sabi Szokoly"
+Contact: https://github.com/sszokoly"
 """
 
 from __future__ import annotations
