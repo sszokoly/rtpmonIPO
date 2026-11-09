@@ -93,8 +93,12 @@ class ProtocolTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "addresses.csv"
             path.write_text(
-                '\nip,username,password\n192.0.2.1,site-user," secret,pw "\n'
-                '2001:db8::1,,site-password\n192.0.2.2,user\n',
+                '\n# IPO inventory\nip,username,password,comment\n'
+                '#192.0.2.99,ignored,ignored,#Disabled\n'
+                '  #192.0.2.98,ignored,ignored,#Disabled\n'
+                '192.0.2.1,site-user," secret,pw ",#Location1\n'
+                '2001:db8::1,,site-password,"Location, two"\n'
+                '192.0.2.2,user\n',
                 encoding="utf-8",
             )
             self.assertEqual(
@@ -106,7 +110,7 @@ class ProtocolTests(unittest.TestCase):
                 ],
             )
             for row in (
-                "192.0.2.1,user,secret,extra\n",
+                "192.0.2.1,user,secret,comment,extra\n",
                 "invalid,user,secret\n",
                 '192.0.2.1,user,"secret\n',
             ):
@@ -205,10 +209,11 @@ class CliTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "addresses.csv"
             path.write_text(
-                "192.0.2.1,file-user,file-password\n"
-                "192.0.2.2,,file-password\n"
-                "192.0.2.3,file-user,\n"
-                "192.0.2.4\n",
+                "#192.0.2.99,ignored,ignored,#Disabled\n"
+                "192.0.2.1,file-user,file-password,#Location1\n"
+                "192.0.2.2,,file-password,#LocationA\n"
+                "192.0.2.3,file-user,,#LocationB\n"
+                "192.0.2.4,,,#LocationC\n",
                 encoding="utf-8",
             )
             for source in ("cli", "environment", "file-only"):

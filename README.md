@@ -25,14 +25,19 @@ uv run -m rtpmonIPO --file ipo-addresses.txt 192.0.2.10
 The file can also contain CSV rows with optional per-IPO credentials:
 
 ```csv
-ip,username,password
-192.0.2.1,Administrator,site-one-password
-192.0.2.2,monitor,"password,with,commas"
+ip,username,password,comment
+192.0.2.1,Administrator,site-one-password,#Location1
+192.0.2.2,monitor,"password,with,commas",#Location2
 192.0.2.3
-192.0.2.4,,site-four-password
+192.0.2.4,,site-four-password,#LocationA
+192.0.2.5,monitor,,#LocationB
+#192.0.2.6,Administrator,password,#Disabled
 ```
 
-The `ip,username,password` header is optional. Each non-empty username or
+The `ip,username,password` or `ip,username,password,comment` header is optional.
+The fourth column is an optional comment and is ignored. Rows whose first field
+starts with `#` (after leading whitespace) are also ignored.
+Each non-empty username or
 password in a row overrides the corresponding `--ipo-user` / `--ipo-passwd`
 setting for that IPO. Missing or empty fields fall back to the CLI settings,
 then `IPO_USER` / `IPO_PASSWORD` (including `.env` when installed), then the

@@ -95,14 +95,20 @@ def _address_file(filename: str) -> list[_IpoTarget]:
             for row in reader:
                 if not row or (len(row) == 1 and not row[0].strip()):
                     continue
-                if first_row and row == ["ip", "username", "password"]:
+                if row[0].lstrip().startswith("#"):
+                    continue
+                if first_row and row in (
+                    ["ip", "username", "password"],
+                    ["ip", "username", "password", "comment"],
+                ):
                     first_row = False
                     continue
                 first_row = False
                 number = reader.line_num
-                if not 1 <= len(row) <= 3:
+                if not 1 <= len(row) <= 4:
                     raise argparse.ArgumentTypeError(
-                        f"{filename}:{number}: expected ip[,username[,password]]"
+                        f"{filename}:{number}: expected "
+                        "ip[,username[,password[,comment]]]"
                     )
                 try:
                     address = _ipo_address(row[0].strip())
@@ -162,8 +168,9 @@ def create_parser() -> argparse.ArgumentParser:
         default=[],
         metavar="FILE",
         help=(
-            "read IPOs from CSV: ip[,username[,password]]; file credentials "
-            "override --ipo-user and --ipo-passwd"
+            "read IPOs from CSV: ip[,username[,password[,comment]]]; "
+            "ignore # comment rows; file credentials override "
+            "--ipo-user and --ipo-passwd"
         ),
     )
     parser.add_argument(
