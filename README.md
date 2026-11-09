@@ -1,7 +1,7 @@
 # rtpmonIPO
 
-Asynchronous Avaya IP Office SysMonitor client that captures decoded H323 RTP
-end summaries.
+Avaya IP Office async system monitor client that captures and prints decoded RTP summaries
+optionally saving them to a local SQLite database file as well.
 
 For the CLI, set `IPO_USER` and `IPO_PASSWORD` in the environment. To load
 these from a `.env` file, install the optional dotenv extra:
