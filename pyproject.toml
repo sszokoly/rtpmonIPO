@@ -1,16 +1,29 @@
 [project]
 name = "rtpmonipo"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Asynchronous Avaya IP Office SysMonitor RTP summary client"
 readme = "README.md"
-requires-python = ">=3.14"
+requires-python = ">=3.11"
 dependencies = [
     "aiohttp>=3.14.5",
 ]
+
+[project.optional-dependencies]
+dotenv = ["python-dotenv>=1.2.4"]
+db = ["aiosqlite>=0.22.1"]
 
 [build-system]
 requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
+[tool.ruff]
+line-length = 80
+
+[tool.ruff.lint]
+ignore = ["N999"]
+
 [tool.hatch.build.targets.wheel]
 packages = ["rtpmonIPO"]
+
+[tool.hatch.version]
+path = "rtpmonIPO/__init__.py"

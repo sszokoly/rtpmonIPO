@@ -10,7 +10,6 @@ __pycache__/
 .Python
 build/
 develop-eggs/
-dist/
 downloads/
 eggs/
 .eggs/
@@ -225,4 +224,8 @@ ipo_rtp/*
 openspec/*
 specs/*
 tests/*
+!tests/test_monitor.py
+!tests/test_db.py
 .opencode/*
+pcaps/*
+*.db

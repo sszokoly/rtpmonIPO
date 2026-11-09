@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 import ipaddress
 import re
 import struct
+from datetime import UTC, datetime
 
 from .models import RtpSummary
-
 
 HEADER = struct.Struct("!IIII")
 HEADER_SIZE = HEADER.size
@@ -36,7 +35,10 @@ INTEGER_METRICS = frozenset(REQUIRED_METRICS.values()) - {"codec", "rfc2833"}
 
 def is_rtp_end_candidate(payload: bytes) -> bool:
     """Return whether *payload* has the target header and encoded marker."""
-    if len(payload) < H323_TEXT_OFFSET or RTP_END_MARKER not in payload[H323_TEXT_OFFSET:]:
+    if (
+        len(payload) < H323_TEXT_OFFSET
+        or RTP_END_MARKER not in payload[H323_TEXT_OFFSET:]
+    ):
         return False
 
     _, message_type, event_id, _ = HEADER.unpack_from(payload)
@@ -63,7 +65,7 @@ def parse_rtp_end(payload: bytes, received_at: datetime) -> RtpSummary | None:
     except (UnicodeDecodeError, ValueError):
         return None
 
-    received_utc = received_at.astimezone(timezone.utc).replace(microsecond=0)
+    received_utc = received_at.astimezone(UTC).replace(microsecond=0)
     return RtpSummary(
         timestamp=received_utc.isoformat(),
         ipo_timestamp=f"0x{ipo_counter:08x}",

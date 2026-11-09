@@ -1,0 +1,205 @@
+"""Focused tests for captured RTP events and connection lifecycle."""
+
+import argparse
+import asyncio
+import contextlib
+import io
+import os
+import struct
+import tempfile
+import unittest
+from datetime import UTC, datetime
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
+
+from aiohttp import WSMsgType
+
+from rtpmonIPO import cli
+from rtpmonIPO.client import IpoClient
+from rtpmonIPO.errors import IpoConnectionError
+from rtpmonIPO.protocol import parse_rtp_end
+from rtpmonIPO.startup import (
+    EVENT_FILTER,
+    FILTER_QUERY,
+    INITIALIZE,
+    KEEPALIVE,
+    POST_FILTER_COMMANDS,
+)
+
+# Text and header reconstructed from the captured 0x0233 RTP-end frame.
+CAPTURED_TEXT = (
+    "!SESS 170f: RTP(END): 10.92.32.3/46750 10.234.255.5/37152 "
+    "CODEC=Ulaw64K(5) PKTSZ=160 RFC2833=on AGE=13356 SENT=660 "
+    "RECV=75 RTdelay=0 jitter=0 loss=0 remotejitter=0 remoteloss=0 "
+)
+CAPTURED_PAYLOAD = (
+    struct.pack("!IIII", 0x1C2, 2, 0x233, 0x309127FF)
+    + bytes(17)
+    + CAPTURED_TEXT.encode("utf-16-be")
+)
+
+
+class ProtocolTests(unittest.TestCase):
+    def test_credentials_load_dotenv_from_current_directory(self) -> None:
+        try:
+            import dotenv  # noqa: F401
+        except ImportError:
+            self.skipTest("python-dotenv is optional")
+        with tempfile.TemporaryDirectory() as directory:
+            Path(directory, ".env").write_text(
+                "IPO_USER=file-user\nIPO_PASSWORD=file-password\n",
+                encoding="utf-8",
+            )
+            previous = Path.cwd()
+            try:
+                os.chdir(directory)
+                with patch.dict(os.environ, {}, clear=True):
+                    args = argparse.Namespace(ipo_user=None, ipo_passwd=None)
+                    self.assertEqual(
+                        cli._credentials(args), ("file-user", "file-password")
+                    )
+            finally:
+                os.chdir(previous)
+
+    def test_captured_rtp_end(self) -> None:
+        summary = parse_rtp_end(
+            CAPTURED_PAYLOAD, datetime(2026, 1, 1, tzinfo=UTC)
+        )
+        self.assertIsNotNone(summary)
+        assert summary is not None
+        self.assertEqual(
+            (summary.sess, summary.sent, summary.recv), ("170f", 660, 75)
+        )
+        self.assertEqual(summary.remote_ip, "10.234.255.5")
+
+    def test_address_file_and_invalid_line(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "addresses.txt"
+            path.write_text(" 192.0.2.1 \n\n2001:db8::1\n", encoding="utf-8")
+            args = cli.create_parser().parse_args(
+                ["-f", str(path), "192.0.2.2"]
+            )
+            self.assertEqual(args.file, ["192.0.2.1", "2001:db8::1"])
+            self.assertEqual(args.ipo_addresses, ["192.0.2.2"])
+            path.write_text("192.0.2.1\ninvalid\n", encoding="utf-8")
+            with self.assertRaisesRegex(argparse.ArgumentTypeError, r":2:"):
+                cli._address_file(str(path))
+
+
+class StartupTests(unittest.IsolatedAsyncioTestCase):
+    async def test_keepalive_sends_and_stops_on_close(self) -> None:
+        class Socket:
+            def __init__(self) -> None:
+                self.closed = False
+                self.sent: list[bytes] = []
+                self.sent_event = asyncio.Event()
+
+            async def send_bytes(self, value: bytes) -> None:
+                self.sent.append(value)
+                self.sent_event.set()
+
+            async def close(self) -> None:
+                self.closed = True
+
+        client = IpoClient("http://192.0.2.1", username="u", password="p")
+        socket = Socket()
+
+        async def open_socket() -> None:
+            client._websocket = socket
+
+        async def start_monitor() -> None:
+            pass
+
+        with (
+            patch.object(client, "_open_websocket", open_socket),
+            patch.object(client, "_start_monitor", start_monitor),
+            patch("rtpmonIPO.client.KEEPALIVE_INTERVAL", 0.01),
+        ):
+            await client.connect()
+            task = client._keepalive_task
+            await asyncio.wait_for(socket.sent_event.wait(), timeout=1)
+            await client.close()
+            self.assertEqual(socket.sent, [KEEPALIVE])
+            self.assertIsNotNone(task)
+            assert task is not None
+            self.assertTrue(task.done())
+            self.assertTrue(socket.closed)
+
+    async def test_startup_sequence_and_pending_event(self) -> None:
+        def event(event_id: int) -> bytes:
+            return struct.pack("!IIII", 1, 2, event_id, 0)
+
+        class Socket:
+            def __init__(self) -> None:
+                self.sent: list[bytes] = []
+                self.messages = iter(
+                    [CAPTURED_PAYLOAD, event(0xC7), event(0x2DF)]
+                )
+
+            async def send_bytes(self, value: bytes) -> None:
+                self.sent.append(value)
+
+            async def receive(self) -> SimpleNamespace:
+                return SimpleNamespace(
+                    type=WSMsgType.BINARY, data=next(self.messages)
+                )
+
+        client = IpoClient("http://192.0.2.1", username="u", password="p")
+        socket = Socket()
+        client._websocket = socket
+        await client._start_monitor()
+        self.assertEqual(
+            socket.sent,
+            [INITIALIZE, FILTER_QUERY, EVENT_FILTER, *POST_FILTER_COMMANDS],
+        )
+        self.assertEqual(len(client._pending_messages), 1)
+        self.assertEqual(client._pending_messages[0][0], CAPTURED_PAYLOAD)
+
+
+class CliTests(unittest.IsolatedAsyncioTestCase):
+    async def test_partial_connection_and_independent_stream_failure(
+        self,
+    ) -> None:
+        class Client:
+            def __init__(self, url: str, **kwargs: object) -> None:
+                self.websocket_url = url
+
+            async def connect(self) -> None:
+                if "192.0.2.3" in self.websocket_url:
+                    raise IpoConnectionError(self.websocket_url, "timeout")
+
+            async def close(self) -> None:
+                pass
+
+            async def rtp_summaries(self):
+                if "192.0.2.1" in self.websocket_url:
+                    raise ConnectionError("lost")
+                await asyncio.sleep(0)
+                yield parse_rtp_end(CAPTURED_PAYLOAD, datetime.now(UTC))
+
+        args = argparse.Namespace(
+            protocol="http",
+            port=80,
+            ipo_user="u",
+            ipo_passwd="p",
+            ipo_addresses=["192.0.2.1", "192.0.2.2", "192.0.2.3"],
+            insecure=False,
+            connection_timeout=1.0,
+            verbose=False,
+            bad_only=False,
+        )
+        output, errors = io.StringIO(), io.StringIO()
+        with (
+            patch.object(cli, "IpoClient", Client),
+            contextlib.redirect_stdout(output),
+            contextlib.redirect_stderr(errors),
+        ):
+            self.assertEqual(await cli.run(args), 0)
+        self.assertIn("Ulaw64K", output.getvalue())
+        self.assertIn("192.0.2.3", errors.getvalue())
+        self.assertIn("192.0.2.1", errors.getvalue())
+
+
+if __name__ == "__main__":
+    unittest.main()
