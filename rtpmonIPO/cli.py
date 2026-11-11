@@ -441,6 +441,7 @@ def _summary_header(verbose: bool) -> str:
     if verbose:
         fields.extend(
             [
+                ("Age", 8),
                 ("Delay", 5),
                 ("Jitter", 6),
                 ("Loss", 6),
@@ -471,6 +472,7 @@ def _format_summary(summary: RtpSummary, verbose: bool) -> str:
     if verbose:
         fields.extend(
             [
+                (summary.age, 8),
                 (summary.rtpdelay, 5),
                 (summary.jitter, 6),
                 (summary.loss, 6),
