@@ -5,6 +5,7 @@ import asyncio
 import contextlib
 import io
 import os
+import re
 import struct
 import tempfile
 import unittest
@@ -135,6 +136,27 @@ class ProtocolTests(unittest.TestCase):
 
 
 class StartupTests(unittest.IsolatedAsyncioTestCase):
+    def test_startup_matches_h323_only_capture(self) -> None:
+        path = Path(__file__).resolve().parents[1] / "data/ipo_h323evt_only.txt"
+        if not path.exists():
+            self.skipTest("local H323Evt-only capture is unavailable")
+        capture = path.read_text(encoding="utf-8")
+        frame = capture.split("Frame 27: Packet", 1)[1].split(
+            "Frame 28: Packet", 1
+        )[0]
+        rows = re.findall(
+            r"^[0-9a-f]{4}  ((?:[0-9a-f]{2} ){1,16})", frame, re.MULTILINE
+        )
+        self.assertEqual(EVENT_FILTER, bytes.fromhex("".join(rows)))
+        self.assertEqual(len(EVENT_FILTER), 583)
+        frame = capture.split("Frame 29: Packet", 1)[1].split(
+            "Frame 30: Packet", 1
+        )[0]
+        commands = re.findall(r"^    Data: ([0-9a-f]+)$", frame, re.MULTILINE)
+        self.assertEqual(
+            POST_FILTER_COMMANDS, tuple(bytes.fromhex(c) for c in commands)
+        )
+
     async def test_keepalive_sends_and_stops_on_close(self) -> None:
         class Socket:
             def __init__(self) -> None:
@@ -149,7 +171,10 @@ class StartupTests(unittest.IsolatedAsyncioTestCase):
             async def close(self) -> None:
                 self.closed = True
 
-        client = IpoClient("http://192.0.2.1", username="u", password="p")
+        client = IpoClient(
+            "http://192.0.2.1", username="u", password="p",
+            keepalive_interval=0.01,
+        )
         socket = Socket()
 
         async def open_socket() -> None:
@@ -161,7 +186,6 @@ class StartupTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(client, "_open_websocket", open_socket),
             patch.object(client, "_start_monitor", start_monitor),
-            patch("rtpmonIPO.client.KEEPALIVE_INTERVAL", 0.01),
         ):
             await client.connect()
             task = client._keepalive_task
@@ -181,13 +205,20 @@ class StartupTests(unittest.IsolatedAsyncioTestCase):
             def __init__(self) -> None:
                 self.sent: list[bytes] = []
                 self.messages = iter(
-                    [CAPTURED_PAYLOAD, event(0xC7), event(0x2DF)]
+                    [CAPTURED_PAYLOAD, event(0xC7), event(0x1FB)]
                 )
 
             async def send_bytes(self, value: bytes) -> None:
                 self.sent.append(value)
 
             async def receive(self) -> SimpleNamespace:
+                if len(self.sent) > 1:
+                    self_expected = [
+                        INITIALIZE, FILTER_QUERY, EVENT_FILTER,
+                        *POST_FILTER_COMMANDS,
+                    ]
+                    if self.sent != self_expected:
+                        raise AssertionError("waiting before requests were sent")
                 return SimpleNamespace(
                     type=WSMsgType.BINARY, data=next(self.messages)
                 )
@@ -205,6 +236,20 @@ class StartupTests(unittest.IsolatedAsyncioTestCase):
 
 
 class CliTests(unittest.IsolatedAsyncioTestCase):
+    def test_keepalive_interval_argument(self) -> None:
+        parser = cli.create_parser()
+        self.assertEqual(
+            parser.parse_args([]).keepalive_interval, cli.KEEPALIVE_INTERVAL
+        )
+        self.assertEqual(
+            parser.parse_args(["--keepalive-interval", "25"]).keepalive_interval,
+            25.0,
+        )
+        for value in ("0", "-1", "nan", "inf", "invalid"):
+            with self.subTest(value=value), contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit):
+                    parser.parse_args(["--keepalive-interval", value])
+
     async def test_per_target_credentials_and_fallbacks(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "addresses.csv"
@@ -218,7 +263,7 @@ class CliTests(unittest.IsolatedAsyncioTestCase):
             )
             for source in ("cli", "environment", "file-only"):
                 with self.subTest(source=source):
-                    argv = ["--file", str(path)]
+                    argv = ["--file", str(path), "--keepalive-interval", "25"]
                     if source == "cli":
                         argv += [
                             "--ipo-user", "cli-user",
@@ -271,6 +316,8 @@ class CliTests(unittest.IsolatedAsyncioTestCase):
                             (user, password),
                         ]
                     self.assertEqual(actual, expected)
+                    for call in factory.call_args_list:
+                        self.assertEqual(call.kwargs["keepalive_interval"], 25)
                     for client in clients:
                         client.close.assert_awaited_once()
 

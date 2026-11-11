@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 from collections import deque
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
@@ -49,6 +50,7 @@ class IpoClient:
         password: str,
         insecure: bool = False,
         startup_timeout: float = 10.0,
+        keepalive_interval: float = KEEPALIVE_INTERVAL,
     ) -> None:
         if not username or not password:
             raise ValueError("username and password are required")
@@ -56,12 +58,15 @@ class IpoClient:
             raise TypeError("insecure must be a boolean")
         if startup_timeout <= 0:
             raise ValueError("startup_timeout must be positive")
+        if not math.isfinite(keepalive_interval) or keepalive_interval <= 0:
+            raise ValueError("keepalive_interval must be finite and positive")
 
         self._endpoint: str = _normalize_endpoint(base_url)
         self._username: str = username
         self._password: str = password
         self._insecure: bool = insecure
         self._startup_timeout: float = startup_timeout
+        self._keepalive_interval: float = keepalive_interval
         self._session: ClientSession | None = None
         self._websocket: ClientWebSocketResponse | None = None
         self._keepalive_task: asyncio.Task[None] | None = None
@@ -123,7 +128,7 @@ class IpoClient:
             return
         try:
             while not websocket.closed:
-                await asyncio.sleep(KEEPALIVE_INTERVAL)
+                await asyncio.sleep(self._keepalive_interval)
                 if websocket.closed:
                     break
                 await websocket.send_bytes(KEEPALIVE)
@@ -168,10 +173,9 @@ class IpoClient:
         CLIENT_LOGGER.debug("Installing SysMonitor event filters")
         await self._websocket.send_bytes(FILTER_QUERY)
         await self._websocket.send_bytes(EVENT_FILTER)
-        await self._wait_for_event(FILTER_COMPLETE_EVENT)
-
         for command in POST_FILTER_COMMANDS:
             await self._websocket.send_bytes(command)
+        await self._wait_for_event(FILTER_COMPLETE_EVENT)
 
     async def _wait_for_event(self, event_id: int) -> None:
         """Read startup messages through the requested IPO event identifier."""

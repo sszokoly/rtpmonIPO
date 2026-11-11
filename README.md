@@ -50,6 +50,18 @@ arrives on a later local calendar day, existing records are moved to an archive
 such as `rtpsummary_20261108.db`, and the active database starts the new day.
 The `--bad-only` filter also applies to stored records.
 
+Connections use the captured H323Evt-only filter by default to reduce unrelated
+monitor traffic. SysMonitor keepalives default to `KEEPALIVE_INTERVAL` (10
+seconds). Override the interval for all CLI connections with:
+
+```bash
+uv run -m rtpmonIPO --file ipos.csv --keepalive-interval 20
+```
+
+The interval must be a finite, positive number of seconds. Library callers can
+set `IpoClient(..., keepalive_interval=20)`. Longer intervals reduce keepalive
+traffic, but must remain within the IPO's idle timeout.
+
 ## CLI and database example
 
 With credentials already set in the environment, run:

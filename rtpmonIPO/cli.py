@@ -30,7 +30,7 @@ except ImportError:
 
 
 from . import __version__
-from .client import IpoClient
+from .client import KEEPALIVE_INTERVAL, IpoClient
 from .db import SummaryDatabase
 from .errors import IpoConnectionError
 from .models import RtpSummary
@@ -202,6 +202,16 @@ def create_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--keepalive-interval",
+        type=_positive_seconds,
+        default=KEEPALIVE_INTERVAL,
+        metavar="SECONDS",
+        help=(
+            "seconds between SysMonitor keepalives "
+            f"(default: {KEEPALIVE_INTERVAL:g})"
+        ),
+    )
+    parser.add_argument(
         "--ipo-user",
         "--ipo_user",
         dest="ipo_user",
@@ -253,6 +263,9 @@ async def run(arguments: argparse.Namespace) -> int:
             _base_url(arguments.protocol, target.address, arguments.port),
             username=user,
             password=passwd,
+            keepalive_interval=getattr(
+                arguments, "keepalive_interval", KEEPALIVE_INTERVAL
+            ),
             insecure=getattr(arguments, "insecure", False),
             startup_timeout=getattr(
                 arguments, "connection_timeout", CONNECTION_TIMEOUT
