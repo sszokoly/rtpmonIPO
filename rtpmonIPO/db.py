@@ -41,13 +41,17 @@ SUMMARY_SCHEMA = """
      rtpdelay INTEGER NOT NULL, jitter INTEGER NOT NULL, loss INTEGER NOT NULL,
      remotejitter INTEGER NOT NULL, remoteloss INTEGER NOT NULL)
 """
+DEFAULT_ROTATE = 7
 
 
 class SummaryDatabase:
     """Store summaries in a daily rotating SQLite database."""
 
-    def __init__(self, path: str | Path) -> None:
+    def __init__(self, path: str | Path, *, rotate: int = DEFAULT_ROTATE) -> None:
+        if isinstance(rotate, bool) or not isinstance(rotate, int) or rotate < 0:
+            raise ValueError("rotate must be a non-negative integer")
         self.path = Path(path)
+        self._retained_archives = rotate
         self._connection: aiosqlite.Connection | None = None
         self._lock = asyncio.Lock()
         self._date: date | None = None
@@ -110,6 +114,7 @@ class SummaryDatabase:
             if self._date is not None and day > self._date:
                 await self._rotate(connection, self._date)
                 self._date = None
+                await asyncio.to_thread(self._prune_archives)
 
             active_date = self._date if self._date is not None else day
             columns = ", ".join(SUMMARY_COLUMNS)
@@ -159,6 +164,31 @@ class SummaryDatabase:
             raise
         finally:
             await connection.execute("DETACH DATABASE rtp_archive")
+
+    def _prune_archives(self) -> None:
+        """Keep the newest dated archives belonging to this database only."""
+        prefix = f"{self.path.stem}_"
+        suffix = self.path.suffix
+        archives: list[tuple[date, Path]] = []
+        for path in self.path.parent.iterdir():
+            if not path.name.startswith(prefix):
+                continue
+            tail = path.name[len(prefix):]
+            if suffix:
+                if not tail.endswith(suffix):
+                    continue
+                tail = tail[:-len(suffix)]
+            if len(tail) != 8 or not tail.isascii() or not tail.isdigit():
+                continue
+            try:
+                day = date(int(tail[:4]), int(tail[4:6]), int(tail[6:]))
+            except ValueError:
+                continue
+            if path.is_file() and not path.is_symlink():
+                archives.append((day, path))
+        archives.sort(key=lambda item: item[0], reverse=True)
+        for _, path in archives[self._retained_archives:]:
+            path.unlink(missing_ok=True)
 
 
 def _summary_date(timestamp: str) -> date:

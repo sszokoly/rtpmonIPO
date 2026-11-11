@@ -31,7 +31,7 @@ except ImportError:
 
 from . import __version__
 from .client import KEEPALIVE_INTERVAL, IpoClient
-from .db import SummaryDatabase
+from .db import DEFAULT_ROTATE, SummaryDatabase
 from .errors import IpoConnectionError
 from .models import RtpSummary
 
@@ -54,6 +54,19 @@ def _port(value: str) -> int:
     if not 1 <= port <= 65535:
         raise argparse.ArgumentTypeError("port must be between 1 and 65535")
     return port
+
+
+def _archive_count(value: str) -> int:
+    """Return a non-negative archive retention count for argparse."""
+    try:
+        count = int(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(
+            "rotate must be a non-negative integer"
+        ) from error
+    if count < 0:
+        raise argparse.ArgumentTypeError("rotate must be a non-negative integer")
+    return count
 
 
 def _ipo_address(value: str) -> str:
@@ -160,6 +173,16 @@ def create_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--db", metavar="FILE", help="store printed summaries in a SQLite file"
+    )
+    parser.add_argument(
+        "--rotate",
+        type=_archive_count,
+        default=DEFAULT_ROTATE,
+        metavar="COUNT",
+        help=(
+            "number of daily database archives to retain, excluding the "
+            f"current database (default: {DEFAULT_ROTATE}; 0 keeps none)"
+        ),
     )
     parser.add_argument(
         "-f",
@@ -274,7 +297,9 @@ async def run(arguments: argparse.Namespace) -> int:
         for target, (user, passwd) in zip(targets, credentials, strict=True)
     ]
     database = (
-        SummaryDatabase(arguments.db)
+        SummaryDatabase(
+            arguments.db, rotate=getattr(arguments, "rotate", DEFAULT_ROTATE)
+        )
         if getattr(arguments, "db", None)
         else None
     )

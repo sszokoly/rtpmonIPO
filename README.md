@@ -50,6 +50,16 @@ arrives on a later local calendar day, existing records are moved to an archive
 such as `rtpsummary_20261108.db`, and the active database starts the new day.
 The `--bad-only` filter also applies to stored records.
 
+`--rotate COUNT` controls how many dated database archives are retained
+(default: `7`), excluding the current database. Immediately after each rotation,
+the newest `COUNT` archives are kept and older archives for that database are
+deleted. With daily traffic, this retains the previous seven days plus today.
+`--rotate 0` removes all dated archives after rotation. For example:
+
+```bash
+uv run --extra db -m rtpmonIPO --db rtpsummary.db --rotate 14 192.0.2.10
+```
+
 Connections use the captured H323Evt-only filter by default to reduce unrelated
 monitor traffic. SysMonitor keepalives default to `KEEPALIVE_INTERVAL` (10
 seconds). Override the interval for all CLI connections with:

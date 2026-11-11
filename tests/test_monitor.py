@@ -236,6 +236,18 @@ class StartupTests(unittest.IsolatedAsyncioTestCase):
 
 
 class CliTests(unittest.IsolatedAsyncioTestCase):
+    def test_rotate_argument(self) -> None:
+        parser = cli.create_parser()
+        self.assertEqual(parser.parse_args([]).rotate, 7)
+        for value in ("0", "14"):
+            self.assertEqual(
+                parser.parse_args(["--rotate", value]).rotate, int(value)
+            )
+        for value in ("-1", "1.5", "invalid"):
+            with self.subTest(value=value), contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit):
+                    parser.parse_args(["--rotate", value])
+
     def test_keepalive_interval_argument(self) -> None:
         parser = cli.create_parser()
         self.assertEqual(

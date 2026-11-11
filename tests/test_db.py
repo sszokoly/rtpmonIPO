@@ -35,6 +35,55 @@ def summary(timestamp: str, sent: int) -> RtpSummary:
 
 
 class DatabaseTests(unittest.IsolatedAsyncioTestCase):
+    async def test_retention_after_rotation(self) -> None:
+        for count in (7, 2, 0):
+            with self.subTest(count=count), tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "rtp.db"
+                unrelated = [
+                    "other_20260101.db", "rtp_20260230.db",
+                    "rtp_backup.db", "rtp_20260101.db.bak",
+                ]
+                for name in unrelated:
+                    Path(directory, name).write_text("preserve", encoding="utf-8")
+                database = (
+                    SummaryDatabase(path) if count == 7
+                    else SummaryDatabase(path, rotate=count)
+                )
+                await database.open()
+                try:
+                    for day in range(1, 11):
+                        await database.write(
+                            summary(f"2026-01-{day:02d}T12:00:00", day)
+                        )
+                        expected = {
+                            f"rtp_202601{old:02d}.db"
+                            for old in range(max(1, day - count), day)
+                        }
+                        actual = {
+                            item.name for item in Path(directory).iterdir()
+                            if item.name not in unrelated and item != path
+                        }
+                        self.assertEqual(actual, expected)
+                        for name in unrelated:
+                            self.assertEqual(
+                                Path(directory, name).read_text(encoding="utf-8"),
+                                "preserve",
+                            )
+                    with sqlite3.connect(path) as connection:
+                        self.assertEqual(
+                            connection.execute(
+                                "SELECT sent FROM rtp_summaries"
+                            ).fetchall(),
+                            [(10,)],
+                        )
+                finally:
+                    await database.close()
+
+    def test_invalid_retention(self) -> None:
+        for value in (-1, 1.5, True):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                SummaryDatabase("unused.db", rotate=value)
+
     async def test_append_restart_rotation_and_existing_archive(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "rtp.db"
