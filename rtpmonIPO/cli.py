@@ -339,15 +339,11 @@ async def run(arguments: argparse.Namespace) -> int:
     )
     verbose = getattr(arguments, "verbose", False)
     bad_only = getattr(arguments, "bad_only", False)
-    header_printed = False
 
     def connected(client: IpoClient) -> None:
-        nonlocal header_printed
         print(f"Connected to {client.websocket_url}", flush=True)
-        # No await between the check and print: supervisors cannot race here.
-        if not header_printed:
-            print(_summary_header(verbose), flush=True)
-            header_printed = True
+        # Keep the heading below connection updates, including reconnects.
+        print(_summary_header(verbose), flush=True)
 
     try:
         if database is not None:
@@ -474,11 +470,11 @@ def _summary_header(verbose: bool) -> str:
         ("Codec", 7),
         ("Sent", 6),
         ("Recv", 6),
+        ("Age", 8),
     ]
     if verbose:
         fields.extend(
             [
-                ("Age", 8),
                 ("Delay", 5),
                 ("Jitter", 6),
                 ("Loss", 6),
@@ -505,11 +501,11 @@ def _format_summary(summary: RtpSummary, verbose: bool) -> str:
         (summary.codec, 7),
         (summary.sent, 6),
         (summary.recv, 6),
+        (summary.age, 8),
     ]
     if verbose:
         fields.extend(
             [
-                (summary.age, 8),
                 (summary.rtpdelay, 5),
                 (summary.jitter, 6),
                 (summary.loss, 6),

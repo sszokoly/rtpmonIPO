@@ -92,7 +92,8 @@ library calls retain single-session behavior and do not reconnect automatically.
 
 Connection-success messages and summaries go to standard output. Disconnects
 and failed attempts identify the affected endpoint and next retry delay on
-standard error. The summary header prints only once per invocation. Recovered
+standard error. The summary header prints after each successful connection
+message, including reconnects, so it stays below the connection updates. Recovered
 sessions retain verbose/bad-only filtering and the same database writer,
 including daily rotation and archive retention.
 
@@ -124,9 +125,12 @@ Sample output (timestamps are shown in the host's local timezone):
 
 ```text
 Connected to wss://192.0.2.10:443/sysmonitor/
-Date/Time            LocalIP          LPort  RemoteIP         RPort  Codec    Sent    Recv
-2026-11-08@14:33:22  192.0.2.10       46750  192.0.2.20       37186  Ulaw64K  513     53
+Date/Time            LocalIP          LPort  RemoteIP         RPort  Codec    Sent    Recv    Age
+2026-11-08@14:33:22  192.0.2.10       46750  192.0.2.20       37186  Ulaw64K  513     53      13356
 ```
+
+`Age` is included after `Recv` in both standard and verbose output, with an
+8-character column width. `--verbose` adds delay, jitter, and loss metrics.
 
 The SQLite database contains an `rtp_summaries` table with all fields from
 each `RtpSummary`. For example:

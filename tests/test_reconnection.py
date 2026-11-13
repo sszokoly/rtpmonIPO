@@ -363,7 +363,7 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
                         [(sent, 0)],
                     )
 
-    async def test_reporting_header_once_and_credential_redaction(self):
+    async def test_reporting_header_after_connections_and_credential_redaction(self):
         for verbose in (False, True):
             with self.subTest(verbose=verbose):
                 attempts = {}
@@ -422,10 +422,16 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
                     finally:
                         await cancel(task)
                 self.assertEqual(waits, [1, 2, 1])
-                self.assertEqual(output.getvalue().count("Date/Time"), 1)
+                self.assertEqual(output.getvalue().count("Date/Time"), 3)
                 self.assertEqual(output.getvalue().count("Connected to"), 3)
                 self.assertEqual(output.getvalue().count("Ulaw64K"), 3)
                 self.assertIn(cli._summary_header(verbose), output.getvalue())
+                lines = output.getvalue().splitlines()
+                for number, line in enumerate(lines):
+                    if line.startswith("Connected to "):
+                        self.assertEqual(
+                            lines[number + 1], cli._summary_header(verbose)
+                        )
                 self.assertLess(output.getvalue().index("Date/Time"), output.getvalue().index("Ulaw64K"))
                 self.assertIn("Disconnected from http://192.0.2.1:80", errors.getvalue())
                 self.assertIn("retrying in 2 seconds", errors.getvalue())

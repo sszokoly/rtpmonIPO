@@ -236,6 +236,63 @@ class StartupTests(unittest.IsolatedAsyncioTestCase):
 
 
 class CliTests(unittest.IsolatedAsyncioTestCase):
+    def test_age_is_in_standard_output_and_not_duplicated_in_verbose(self) -> None:
+        summary = parse_rtp_end(CAPTURED_PAYLOAD, datetime.now(UTC))
+        assert summary is not None
+        standard_header = cli._summary_header(False)
+        standard_row = cli._format_summary(summary, False)
+        self.assertEqual(
+            standard_header.split(),
+            ["Date/Time", "LocalIP", "LPort", "RemoteIP", "RPort",
+             "Codec", "Sent", "Recv", "Age"],
+        )
+        age_start = standard_header.index("Age")
+        self.assertEqual(standard_header[age_start:], "Age     ")
+        self.assertEqual(standard_row[age_start:], "13356   ")
+        self.assertTrue(cli._summary_header(True).startswith(standard_header + "  Delay"))
+        self.assertTrue(cli._format_summary(summary, True).startswith(standard_row + "  "))
+        self.assertEqual(cli._summary_header(True).split().count("Age"), 1)
+
+    async def test_idle_startup_heading_follows_last_connection_update(self) -> None:
+        waiting = asyncio.Event()
+        streams = 0
+
+        class Client:
+            def __init__(self, url, **kwargs):
+                self.websocket_url = url
+
+            async def connect(self):
+                await asyncio.sleep(0)
+
+            async def close(self):
+                pass
+
+            async def rtp_summaries(self):
+                nonlocal streams
+                streams += 1
+                if streams == 2:
+                    waiting.set()
+                await asyncio.Event().wait()
+                yield  # Make this an idle async generator.
+
+        args = cli.create_parser().parse_args([
+            "--ipo-user", "user", "--ipo-passwd", "password",
+            "192.0.2.1", "192.0.2.2",
+        ])
+        output = io.StringIO()
+        with patch.object(cli, "IpoClient", Client), contextlib.redirect_stdout(output):
+            task = asyncio.create_task(cli.run(args))
+            try:
+                await asyncio.wait_for(waiting.wait(), 1)
+                lines = output.getvalue().splitlines()
+                self.assertEqual(lines[-1], cli._summary_header(False))
+                self.assertTrue(lines[-2].startswith("Connected to "))
+                self.assertEqual(output.getvalue().count("Connected to "), 2)
+            finally:
+                task.cancel()
+                with self.assertRaises(asyncio.CancelledError):
+                    await task
+
     def test_rotate_argument(self) -> None:
         parser = cli.create_parser()
         self.assertEqual(parser.parse_args([]).rotate, 7)
