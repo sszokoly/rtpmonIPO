@@ -275,7 +275,11 @@ class CliTests(unittest.IsolatedAsyncioTestCase):
             )
             for source in ("cli", "environment", "file-only"):
                 with self.subTest(source=source):
-                    argv = ["--file", str(path), "--keepalive-interval", "25"]
+                    argv = [
+                        "--file", str(path), "--keepalive-interval", "25",
+                        "--protocol", "https", "--port", "8443",
+                        "--insecure", "--connection-timeout", "3",
+                    ]
                     if source == "cli":
                         argv += [
                             "--ipo-user", "cli-user",
@@ -301,14 +305,37 @@ class CliTests(unittest.IsolatedAsyncioTestCase):
                         {} if source == "file-only" else
                         {"IPO_USER": "env-user", "IPO_PASSWORD": "env-password"}
                     )
+                    target_count = len(args.file) + len(args.ipo_addresses)
+                    barrier = asyncio.Barrier(target_count)
+                    retried = asyncio.Event()
+                    waits = 0
+
+                    async def retry_wait(seconds):
+                        nonlocal waits
+                        waits += 1
+                        if waits <= target_count:
+                            await barrier.wait()
+                        else:
+                            if waits == target_count * 2:
+                                retried.set()
+                            await asyncio.Event().wait()
+
                     with (
                         patch.dict(os.environ, environment, clear=True),
                         patch.object(cli, "load_dotenv"),
                         patch.object(cli, "IpoClient", side_effect=make_client)
                         as factory,
+                        patch.object(cli, "_retry_wait", retry_wait),
                         contextlib.redirect_stderr(io.StringIO()),
                     ):
-                        self.assertEqual(await cli.run(args), 1)
+                        task = asyncio.create_task(cli.run(args))
+                        try:
+                            await asyncio.wait_for(retried.wait(), 1)
+                            self.assertFalse(task.done())
+                        finally:
+                            task.cancel()
+                            with self.assertRaises(asyncio.CancelledError):
+                                await task
                     actual = [
                         (call.kwargs["username"], call.kwargs["password"])
                         for call in factory.call_args_list
@@ -327,9 +354,19 @@ class CliTests(unittest.IsolatedAsyncioTestCase):
                             ("file-user", password),
                             (user, password),
                         ]
-                    self.assertEqual(actual, expected)
+                    self.assertEqual(actual[:target_count], expected)
+                    for call in factory.call_args_list[target_count:]:
+                        original = next(
+                            first for first in factory.call_args_list[:target_count]
+                            if first.args == call.args
+                        )
+                        self.assertEqual(call, original)
                     for call in factory.call_args_list:
                         self.assertEqual(call.kwargs["keepalive_interval"], 25)
+                        self.assertEqual(call.kwargs["startup_timeout"], 3)
+                        self.assertTrue(call.kwargs["insecure"])
+                        self.assertTrue(call.args[0].startswith("https://"))
+                        self.assertTrue(call.args[0].endswith(":8443"))
                     for client in clients:
                         client.close.assert_awaited_once()
 
@@ -365,15 +402,70 @@ class CliTests(unittest.IsolatedAsyncioTestCase):
             bad_only=False,
         )
         output, errors = io.StringIO(), io.StringIO()
+        waiting = asyncio.Event()
+        waits = 0
+
+        async def retry_wait(seconds):
+            nonlocal waits
+            waits += 1
+            if waits == 3:
+                waiting.set()
+            await asyncio.Event().wait()
+
         with (
             patch.object(cli, "IpoClient", Client),
+            patch.object(cli, "_retry_wait", retry_wait),
             contextlib.redirect_stdout(output),
             contextlib.redirect_stderr(errors),
         ):
-            self.assertEqual(await cli.run(args), 0)
+            task = asyncio.create_task(cli.run(args))
+            try:
+                await asyncio.wait_for(waiting.wait(), 1)
+                self.assertFalse(task.done())
+            finally:
+                task.cancel()
+                with self.assertRaises(asyncio.CancelledError):
+                    await task
         self.assertIn("Ulaw64K", output.getvalue())
         self.assertIn("192.0.2.3", errors.getvalue())
         self.assertIn("192.0.2.1", errors.getvalue())
+
+    async def test_stalled_startup_does_not_delay_healthy_target(self) -> None:
+        received = asyncio.Event()
+        closed = []
+
+        class Client:
+            def __init__(self, url, **kwargs):
+                self.websocket_url = url
+
+            async def connect(self):
+                if "192.0.2.1" in self.websocket_url:
+                    await asyncio.Event().wait()
+
+            async def close(self):
+                closed.append(self.websocket_url)
+
+            async def rtp_summaries(self):
+                yield parse_rtp_end(CAPTURED_PAYLOAD, datetime.now(UTC))
+                received.set()
+                await asyncio.Event().wait()
+
+        args = cli.create_parser().parse_args([
+            "--ipo-user", "user", "--ipo-passwd", "password",
+            "192.0.2.1", "192.0.2.2",
+        ])
+        output = io.StringIO()
+        with patch.object(cli, "IpoClient", Client), contextlib.redirect_stdout(output):
+            task = asyncio.create_task(cli.run(args))
+            try:
+                await asyncio.wait_for(received.wait(), 1)
+                self.assertIn("Ulaw64K", output.getvalue())
+                self.assertFalse(task.done())
+            finally:
+                task.cancel()
+                with self.assertRaises(asyncio.CancelledError):
+                    await task
+        self.assertEqual(len(closed), 2)
 
 
 if __name__ == "__main__":

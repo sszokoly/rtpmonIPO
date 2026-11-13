@@ -74,6 +74,46 @@ traffic, but must remain within the IPO's idle timeout.
 
 ## CLI and database example
 
+### Automatic connection recovery
+
+The CLI monitors each configured IPO independently. It retries initial
+connection/startup failures and reconnects after a remote close or detected
+stream failure, while healthy IPO connections continue uninterrupted.
+Retry delays are **1, 2, 4, 8, 16, 32, then 60 seconds**, capped at 60 seconds
+indefinitely. The delay resets to 1 second after complete successful startup,
+even when the IPO has no calls. Each delay starts after the previous attempt's
+resources have been closed.
+
+Every attempt uses the same resolved credentials, protocol/port, TLS policy,
+startup timeout, and keepalive interval, and reapplies the H323Evt-only startup
+filter. The CLI stays running and retrying even if **all IPOs are offline**;
+it no longer exits merely because no IPO is connected. Direct `IpoClient`
+library calls retain single-session behavior and do not reconnect automatically.
+
+Connection-success messages and summaries go to standard output. Disconnects
+and failed attempts identify the affected endpoint and next retry delay on
+standard error. The summary header prints only once per invocation. Recovered
+sessions retain verbose/bad-only filtering and the same database writer,
+including daily rotation and archive retention.
+
+Calls missed during an outage are not replayed or synthesized. Local invalid
+configuration, formatting, output, or database errors are fatal: the CLI stops
+all monitoring, cleans up, and exits nonzero rather than retrying a connection
+to hide a processing failure.
+
+Remote authentication and TLS failures are retried under the same policy;
+certificate verification is never relaxed automatically. Correcting credentials
+or connection settings requires restarting the CLI. Reconnection starts when
+the transport or existing keepalive handling detects a failure: there is no new
+keepalive-acknowledgement timeout, so a silent network blackhole may take time
+to detect.
+
+Press **Ctrl+C** to stop. Connecting, streaming, and retry waits are cancelled
+promptly, and sessions, keepalive tasks, and the shared database are closed
+before exiting with status 130.
+
+### Example
+
 With credentials already set in the environment, run:
 
 ```bash

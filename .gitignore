@@ -226,6 +226,7 @@ specs/*
 tests/*
 !tests/test_monitor.py
 !tests/test_db.py
+!tests/test_reconnection.py
 .opencode/*
 pcaps/*
 *.db

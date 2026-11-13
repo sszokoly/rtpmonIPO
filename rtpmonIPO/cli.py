@@ -10,8 +10,9 @@ import ipaddress
 import logging
 import math
 import os
+import re
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -32,7 +33,6 @@ except ImportError:
 from . import __version__
 from .client import KEEPALIVE_INTERVAL, IpoClient
 from .db import DEFAULT_ROTATE, SummaryDatabase
-from .errors import IpoConnectionError
 from .models import RtpSummary
 
 IPO_PROTO = "http"
@@ -95,6 +95,40 @@ class _IpoTarget:
     address: str
     username: str | None = None
     password: str | None = field(default=None, repr=False)
+
+
+@dataclass(frozen=True)
+class _SessionSettings:
+    """Resolved connection settings retained unchanged across retry attempts."""
+
+    base_url: str
+    username: str = field(repr=False)
+    password: str = field(repr=False)
+    insecure: bool
+    startup_timeout: float
+    keepalive_interval: float
+
+    def create_client(self) -> IpoClient:
+        return IpoClient(
+            self.base_url,
+            username=self.username,
+            password=self.password,
+            insecure=self.insecure,
+            startup_timeout=self.startup_timeout,
+            keepalive_interval=self.keepalive_interval,
+        )
+
+    def safe_reason(self, error: Exception) -> str:
+        """Redact credentials even when a peer includes them in an error."""
+        secrets = sorted(
+            {self.username, self.password} - {""}, key=len, reverse=True
+        )
+        reason = str(error) or error.__class__.__name__
+        return re.sub(
+            "|".join(re.escape(secret) for secret in secrets),
+            "[redacted]",
+            reason,
+        )
 
 
 def _address_file(filename: str) -> list[_IpoTarget]:
@@ -281,8 +315,8 @@ async def run(arguments: argparse.Namespace) -> int:
                 "empty unless supplied in --file"
             )
 
-    clients: list[IpoClient] = [
-        IpoClient(
+    settings = [
+        _SessionSettings(
             _base_url(arguments.protocol, target.address, arguments.port),
             username=user,
             password=passwd,
@@ -303,70 +337,82 @@ async def run(arguments: argparse.Namespace) -> int:
         if getattr(arguments, "db", None)
         else None
     )
+    verbose = getattr(arguments, "verbose", False)
+    bad_only = getattr(arguments, "bad_only", False)
+    header_printed = False
+
+    def connected(client: IpoClient) -> None:
+        nonlocal header_printed
+        print(f"Connected to {client.websocket_url}", flush=True)
+        # No await between the check and print: supervisors cannot race here.
+        if not header_printed:
+            print(_summary_header(verbose), flush=True)
+            header_printed = True
+
     try:
         if database is not None:
             await database.open()
-        for client in clients:
-            LOGGER.debug(
-                "Opening WebSocket connection to %s", client.websocket_url
-            )
-        results: list[object] = list(
-            await asyncio.gather(
-                *(client.connect() for client in clients),
-                return_exceptions=True,
-            )
-        )
-        connected_clients: list[IpoClient] = []
-        failures: list[IpoConnectionError] = []
-        for client, result in zip(clients, results, strict=True):
-            if result is None:
-                connected_clients.append(client)
-            elif isinstance(result, IpoConnectionError):
-                failures.append(result)
-            elif isinstance(result, Exception):
-                failures.append(
-                    IpoConnectionError(
-                        client.websocket_url,
-                        str(result) or result.__class__.__name__,
-                    )
-                )
-            elif isinstance(result, BaseException):
-                raise result
-            else:
-                raise RuntimeError(
-                    "connection task returned an unexpected result"
-                )
-
-        if failures:
-            for failure in failures:
-                LOGGER.debug("IPO connection failure: %s", failure)
-                print(f"error: {failure}", file=sys.stderr)
-        if not connected_clients:
-            return 1
-
-        for client in connected_clients:
-            LOGGER.debug(
-                "WebSocket connection established to %s", client.websocket_url
-            )
-            print(f"Connected to {client.websocket_url}", flush=True)
-
-        verbose = getattr(arguments, "verbose", False)
-        bad_only = getattr(arguments, "bad_only", False)
-        print(_summary_header(verbose), flush=True)
-
         async with asyncio.TaskGroup() as group:
-            for client in connected_clients:
+            for configuration in settings:
                 group.create_task(
-                    _print_summaries(client, verbose, bad_only, database)
+                    _monitor_target(
+                        configuration, connected, verbose, bad_only, database
+                    )
                 )
         return 0
     finally:
-        LOGGER.debug("Closing %d WebSocket connection(s)", len(clients))
-        await asyncio.gather(
-            *(client.close() for client in clients), return_exceptions=True
-        )
         if database is not None:
             await database.close()
+
+
+async def _retry_wait(seconds: float) -> None:
+    """Wait without blocking other targets, and allow immediate cancellation."""
+    await asyncio.sleep(seconds)
+
+
+async def _monitor_target(
+    settings: _SessionSettings,
+    connected: Callable[[IpoClient], None],
+    verbose: bool,
+    bad_only: bool,
+    database: SummaryDatabase | None,
+) -> None:
+    """Own one target's sessions and isolated bounded retry schedule."""
+    delay = 1
+    while True:
+        # Constructor/configuration errors are fatal, not connection failures.
+        client = settings.create_client()
+        failure: Exception | None = None
+        try:
+            LOGGER.debug(
+                "Opening WebSocket connection to %s", client.websocket_url
+            )
+            try:
+                await client.connect()
+            except Exception as error:
+                failure = error
+            else:
+                delay = 1
+                connected(client)
+                # Receipt errors are returned; local processing errors escape.
+                failure = await _print_summaries(
+                    client, verbose, bad_only, database
+                )
+        finally:
+            await client.close()
+
+        if failure is None:
+            message = f"Disconnected from {client.websocket_url}"
+        else:
+            message = (
+                f"error: connection to {client.websocket_url} failed: "
+                f"{settings.safe_reason(failure)}"
+            )
+        message += f"; retrying in {delay} seconds"
+        LOGGER.debug("%s", message)
+        print(message, file=sys.stderr, flush=True)
+        await _retry_wait(delay)
+        delay = min(delay * 2, 60)
 
 
 def _credentials(arguments: argparse.Namespace) -> tuple[str, str]:
@@ -390,35 +436,26 @@ async def _print_summaries(
     verbose: bool,
     bad_only: bool,
     database: SummaryDatabase | None = None,
-) -> None:
+) -> Exception | None:
     """Print each decoded RTP summary received from one IPO."""
     iterator = client.rtp_summaries()
-    while True:
-        try:
-            summary = await anext(iterator)
-        except StopAsyncIteration:
-            print(f"Disconnected from {client.websocket_url}", file=sys.stderr)
-            return
-        except Exception as error:
-            LOGGER.debug(
-                "Stream failure for %s", client.websocket_url, exc_info=True
-            )
-            print(
-                f"error: stream from {client.websocket_url} failed: {error}",
-                file=sys.stderr,
-            )
-            return
+    try:
+        while True:
+            try:
+                summary = await anext(iterator)
+            except StopAsyncIteration:
+                return None
+            except Exception as error:
+                return error
 
-        try:
             LOGGER.debug("Received RTP summary from %s", client.websocket_url)
             if bad_only and not _is_bad_summary(summary):
                 continue
             if database is not None:
                 await database.write(summary)
             print(_format_summary(summary, verbose), flush=True)
-        except Exception:
-            await iterator.aclose()
-            raise
+    finally:
+        await iterator.aclose()
 
 
 def _is_bad_summary(summary: RtpSummary) -> bool:
